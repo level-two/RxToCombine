@@ -29,6 +29,59 @@ class ObservableToAnyPublisherTests: XCTestCase {
         wait(for: [expectation, valueExpectation], timeout: 1.0)
     }
 
+    func testObservableWithMultipleValues() {
+        let expectation = XCTestExpectation(description: "Received all values")
+        let values = [1, 2, 3]
+        let observable = Observable.from(values).delay(.milliseconds(100), scheduler: MainScheduler.instance)
+        let publisher = observable.toAnyPublisher()
+        var receivedValues = [Int]()
+
+        publisher.sink(
+            receiveCompletion: { completion in
+                if case .failure = completion {
+                    XCTFail("Unexpected failure")
+                } else {
+                    XCTAssertEqual(receivedValues, values)
+                    expectation.fulfill()
+                }
+            },
+            receiveValue: { value in
+                receivedValues.append(value)
+            }
+        ).store(in: &cancellables)
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testObservableWithMultipleValuesAndCancellation() {
+        let expectation = XCTestExpectation(description: "Received values before cancellation")
+        let values = [1, 2, 3]
+        let observable = Observable.from(values).concatMap { value in
+            Observable.just(value).delay(.milliseconds(200), scheduler: MainScheduler.instance)
+        }
+        let publisher = observable.toAnyPublisher()
+        var receivedValues = [Int]()
+
+        let cancellable = publisher.sink(
+            receiveCompletion: { completion in
+                if case .failure = completion {
+                    XCTFail("Unexpected failure")
+                }
+            },
+            receiveValue: { value in
+                receivedValues.append(value)
+            }
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.600) {
+            cancellable.cancel()
+            XCTAssertEqual(receivedValues, [1, 2])
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 2.0)
+    }
+
     func testRxObservableNormalTermination() {
         let expectation = XCTestExpectation(description: "Rx Observable normal termination")
         let observable = Observable.just(1)
@@ -256,6 +309,146 @@ class ObservableToAnyPublisherTests: XCTestCase {
 
         wait(for: [expectation], timeout: 3.0)
     }
+
+    func testMultipleSubscriptions() {
+        let expectation1 = XCTestExpectation(description: "First subscription completion")
+        let expectation2 = XCTestExpectation(description: "Second subscription completion")
+        let expectation3 = XCTestExpectation(description: "Third subscription completion")
+
+        let observable = Observable.just(1).delay(.seconds(2), scheduler: MainScheduler.instance)
+        let publisher = observable.toAnyPublisher()
+        let cancellable1: AnyCancellable
+        let cancellable2: AnyCancellable
+        let cancellable3: AnyCancellable
+
+        cancellable1 = publisher
+            .sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        break
+                    case .failure:
+                        XCTFail("Unexpected failure in first subscription")
+                    }
+                },
+                receiveValue: { value in
+                    if value == 1 {
+                        expectation1.fulfill()
+                    }
+                }
+            )
+
+        cancellable2 = publisher
+            .sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        break
+                    case .failure:
+                        XCTFail("Unexpected failure in second subscription")
+                    }
+                },
+                receiveValue: { value in
+                    if value == 1 {
+                        expectation2.fulfill()
+                    }
+                }
+            )
+
+        cancellable3 = publisher
+            .sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        XCTFail("Unexpected finishing in third subscription")
+                    case .failure:
+                        XCTFail("Unexpected failure in third subscription")
+                    }
+                },
+                receiveValue: { _ in
+                    XCTFail("Unexpected value reception in third subscription")
+                }
+            )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            cancellable3.cancel()
+            expectation3.fulfill()
+        }
+
+        wait(for: [expectation1, expectation2, expectation3], timeout: 2.0)
+    }
+
+    func testMultipleSubscriptionsWithError() {
+        let expectation1 = XCTestExpectation(description: "First subscription completion")
+        let expectation2 = XCTestExpectation(description: "Second subscription completion")
+        let expectation3 = XCTestExpectation(description: "Third subscription completion")
+
+        let observable = Observable<Int>
+            .create { observer in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    observer.onError(TestError.test)
+                }
+                return Disposables.create()
+            }
+            .delay(.seconds(2), scheduler: MainScheduler.instance)
+
+        let publisher = observable.toAnyPublisher()
+        let cancellable1: AnyCancellable
+        let cancellable2: AnyCancellable
+        let cancellable3: AnyCancellable
+
+        cancellable1 = publisher
+            .sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        XCTFail("Unexpected finishing in first subscription")
+                    case .failure(let error):
+                        XCTAssertEqual(error as? TestError, TestError.test)
+                        expectation1.fulfill()
+                    }
+                },
+                receiveValue: { _ in
+                    XCTFail("Unexpected value reception in first subscription")
+                }
+            )
+
+        cancellable2 = publisher
+            .sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        XCTFail("Unexpected finishing in second subscription")
+                    case .failure(let error):
+                        XCTAssertEqual(error as? TestError, TestError.test)
+                        expectation2.fulfill()
+                    }
+                },
+                receiveValue: { _ in
+                    XCTFail("Unexpected value reception in second subscription")
+                }
+            )
+
+        cancellable3 = publisher
+            .sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        XCTFail("Unexpected finishing in third subscription")
+                    case .failure(let error):
+                        XCTAssertEqual(error as? TestError, TestError.test)
+                        expectation3.fulfill()
+                    }
+                },
+                receiveValue: { _ in
+                    XCTFail("Unexpected value reception in third subscription")
+                }
+            )
+
+        wait(for: [expectation1, expectation2, expectation3], timeout: 3.0)
+    }
+
+
 
     enum TestError: Error, Equatable {
         case test
