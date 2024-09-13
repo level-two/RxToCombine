@@ -448,7 +448,26 @@ class ObservableToAnyPublisherTests: XCTestCase {
         wait(for: [expectation1, expectation2, expectation3], timeout: 3.0)
     }
 
+    func testObservableDisposedOnPublisherCancel() {
+        let expectation = self.expectation(description: "Observable should be disposed")
+        var isDisposed = false
 
+        let observable = Observable<Void>.create { observer in
+            return Disposables.create {
+                isDisposed = true
+                expectation.fulfill()
+            }
+        }
+
+        let publisher = observable.toAnyPublisher()
+        let cancellable = publisher
+            .sink(receiveCompletion: { _ in }, receiveValue: { _ in })
+
+        cancellable.cancel()
+
+        wait(for: [expectation], timeout: 1.0)
+        XCTAssertTrue(isDisposed, "Observable was not disposed when publisher was cancelled")
+    }
 
     enum TestError: Error, Equatable {
         case test
